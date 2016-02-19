@@ -2055,6 +2055,9 @@ def create(vm_):
     num_cpus = config.get_cloud_config_value(
         'num_cpus', vm_, __opts__, default=None
     )
+    cores_per_socket = config.get_cloud_config_value(
+        'cores_per_socket', vm_, __opts__, default=None
+    )    
     memory = config.get_cloud_config_value(
         'memory', vm_, __opts__, default=None
     )
@@ -2191,6 +2194,10 @@ def create(vm_):
         if num_cpus:
             log.debug("Setting cpu to: {0}".format(num_cpus))
             config_spec.numCPUs = int(num_cpus)
+
+        if cores_per_socket:
+            log.debug("Setting cores per socket to: {0}".format(cores_per_socket))
+            config_spec.numCoresPerSocket = int(cores_per_socket)
 
         if memory:
             try:
