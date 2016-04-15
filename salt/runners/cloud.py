@@ -9,10 +9,14 @@ available to all internal apis via the runner system
 from __future__ import absolute_import
 
 # Import python libs
+import logging
 import os
 
 # Import Salt libs
 import salt.cloud
+
+# Get logging started
+log = logging.getLogger(__name__)
 
 
 def _get_client():

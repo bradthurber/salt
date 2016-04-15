@@ -369,27 +369,34 @@ def _find_install_targets(name=None,
                 if not (name in cur_pkgs and version in (None, cur_pkgs[name]))
             ])
             if not_installed:
-                problems = _preflight_check(not_installed, **kwargs)
-                comments = []
-                if problems.get('no_suggest'):
-                    comments.append(
-                        'The following package(s) were not found, and no possible '
-                        'matches were found in the package db: '
-                        '{0}'.format(', '.join(sorted(problems['no_suggest'])))
-                    )
-                if problems.get('suggest'):
-                    for pkgname, suggestions in six.iteritems(problems['suggest']):
+                try:
+                    problems = _preflight_check(not_installed, **kwargs)
+                except CommandExecutionError:
+                    pass
+                else:
+                    comments = []
+                    if problems.get('no_suggest'):
                         comments.append(
-                            'Package \'{0}\' not found (possible matches: {1})'
-                            .format(pkgname, ', '.join(suggestions))
+                            'The following package(s) were not found, and no '
+                            'possible matches were found in the package db: '
+                            '{0}'.format(
+                                ', '.join(sorted(problems['no_suggest']))
+                            )
                         )
-                if comments:
-                    if len(comments) > 1:
-                        comments.append('')
-                    return {'name': name,
-                            'changes': {},
-                            'result': False,
-                            'comment': '. '.join(comments).rstrip()}
+                    if problems.get('suggest'):
+                        for pkgname, suggestions in \
+                                six.iteritems(problems['suggest']):
+                            comments.append(
+                                'Package \'{0}\' not found (possible matches: '
+                                '{1})'.format(pkgname, ', '.join(suggestions))
+                            )
+                    if comments:
+                        if len(comments) > 1:
+                            comments.append('')
+                        return {'name': name,
+                                'changes': {},
+                                'result': False,
+                                'comment': '. '.join(comments).rstrip()}
 
     # Find out which packages will be targeted in the call to pkg.install
     targets = {}
@@ -503,6 +510,8 @@ def _verify_install(desired, new_pkgs):
 
         if __grains__['os'] == 'FreeBSD' and origin:
             cver = [k for k, v in six.iteritems(new_pkgs) if v['origin'] == pkgname]
+        elif __grains__['os_family'] == 'Debian':
+            cver = new_pkgs.get(pkgname.split('=')[0])
         else:
             cver = new_pkgs.get(pkgname)
 
@@ -591,7 +600,7 @@ def installed(
 
     :param str version:
         Install a specific version of a package. This option is ignored if
-        either "pkgs" or "sources" is used. Currently, this option is supported
+        "sources" is used. Currently, this option is supported
         for the following pkg providers: :mod:`apt <salt.modules.aptpkg>`,
         :mod:`ebuild <salt.modules.ebuild>`,
         :mod:`pacman <salt.modules.pacman>`,
@@ -631,6 +640,18 @@ def installed(
 
         The version strings returned by either of these functions can be used
         as version specifiers in pkg states.
+
+        You can install a specific version when using the ``pkgs`` argument by
+        including the version after the package:
+
+        .. code-block:: yaml
+
+            common_packages:
+              pkg.installed:
+                - pkgs:
+                  - unzip
+                  - dos2unix
+                  - salt-minion: 2015.8.5-1.el6
 
     :param bool refresh:
         Update the repo database of available packages prior to installing the
@@ -1373,8 +1394,7 @@ def latest(
     '''
     rtag = __gen_rtag()
     refresh = bool(
-        salt.utils.is_true(refresh)
-        or (os.path.isfile(rtag) and refresh is not False)
+        salt.utils.is_true(refresh) or (os.path.isfile(rtag) and refresh is not False)
     )
 
     if kwargs.get('sources'):
@@ -1392,7 +1412,15 @@ def latest(
                     'comment': 'Invalidly formatted "pkgs" parameter. See '
                                'minion log.'}
     else:
-        desired_pkgs = [name]
+        if isinstance(pkgs, list) and len(pkgs) == 0:
+            return {
+                'name': name,
+                'changes': {},
+                'result': True,
+                'comment': 'No packages to install provided'
+            }
+        else:
+            desired_pkgs = [name]
 
     cur = __salt__['pkg.version'](*desired_pkgs, **kwargs)
     try:
@@ -1431,33 +1459,29 @@ def latest(
                 log.error(msg)
                 problems.append(msg)
             else:
-                if salt.utils.compare_versions(ver1=cur[pkg],
-                    oper='!=',
-                    ver2=avail[pkg],
-                    cmp_func=cmp_func):
+                if salt.utils.compare_versions(ver1=cur[pkg], oper='!=', ver2=avail[pkg], cmp_func=cmp_func):
                     targets[pkg] = avail[pkg]
                 else:
                     if not cur[pkg] or __salt__['portage_config.is_changed_uses'](pkg):
                         targets[pkg] = avail[pkg]
     else:
         for pkg in desired_pkgs:
-            if not avail[pkg]:
-                if not cur[pkg]:
+            if pkg not in avail:
+                if not cur.get(pkg):
                     msg = 'No information found for \'{0}\'.'.format(pkg)
                     log.error(msg)
                     problems.append(msg)
-            elif not cur[pkg] \
-                    or salt.utils.compare_versions(ver1=cur[pkg],
-                                                   oper='<',
-                                                   ver2=avail[pkg],
-                                                   cmp_func=cmp_func):
+            elif not cur.get(pkg) \
+                    or salt.utils.compare_versions(ver1=cur[pkg], oper='<', ver2=avail[pkg], cmp_func=cmp_func):
                 targets[pkg] = avail[pkg]
 
     if problems:
-        return {'name': name,
-                'changes': {},
-                'result': False,
-                'comment': ' '.join(problems)}
+        return {
+            'name': name,
+            'changes': {},
+            'result': False,
+            'comment': ' '.join(problems)
+        }
 
     if targets:
         # Find up-to-date packages
@@ -1471,9 +1495,7 @@ def latest(
 
         if __opts__['test']:
             to_be_upgraded = ', '.join(sorted(targets))
-            comment = 'The following packages are set to be ' \
-                      'installed/upgraded: ' \
-                      '{0}'.format(to_be_upgraded)
+            comment = ['The following packages are set to be installed/upgraded: {0}'.format(to_be_upgraded)]
             if up_to_date:
                 up_to_date_nb = len(up_to_date)
                 if up_to_date_nb <= 10:
@@ -1482,19 +1504,16 @@ def latest(
                         '{0} ({1})'.format(name, cur[name])
                         for name in up_to_date_sorted
                     )
-                    comment += (
-                        ' The following packages are already '
-                        'up-to-date: {0}'
-                    ).format(up_to_date_details)
+                    comment.append('The following packages are already up-to-date: {0}'.format(up_to_date_details))
                 else:
-                    comment += ' {0} packages are already up-to-date'.format(
-                        up_to_date_nb
-                    )
+                    comment.append('{0} packages are already up-to-date'.format(up_to_date_nb))
 
-            return {'name': name,
-                    'changes': {},
-                    'result': None,
-                    'comment': comment}
+            return {
+                'name': name,
+                'changes': {},
+                'result': None,
+                'comment': ' '.join(comment)
+            }
 
         # Build updated list of pkgs to exclude non-targeted ones
         targeted_pkgs = list(targets.keys()) if pkgs else None

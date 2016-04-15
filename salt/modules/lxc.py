@@ -667,7 +667,7 @@ def get_network_profile(name=None, **kwargs):
     .. warning::
 
         The ``ipv4``, ``ipv6``, ``gateway``, and ``link`` (bridge) settings in
-        network profiles will only work if the container doesnt redefine the
+        network profiles will only work if the container doesn't redefine the
         network configuration (for example in
         ``/etc/sysconfig/network-scripts/ifcfg-<interface_name>`` on
         RHEL/CentOS, or ``/etc/network/interfaces`` on Debian/Ubuntu/etc.)
@@ -830,7 +830,7 @@ def _network_conf(conf_tuples=None, **kwargs):
             ret.append({'lxc.network.ipv4.gateway': gateway})
             # only one network gateway ;)
             gateway_set = True
-    # normally, this wont happen
+    # normally, this won't happen
     # set the gateway if specified even if we did
     # not managed the network underlying
     if gateway is not None and not gateway_set:
@@ -1933,7 +1933,7 @@ def create(name,
     if backing in ('dir', 'overlayfs', 'btrfs', 'zfs'):
         fstype = None
         size = None
-    # some backends wont support some parameters
+    # some backends won't support some parameters
     if backing in ('aufs', 'dir', 'overlayfs', 'btrfs'):
         lvname = vgname = None
 
@@ -3021,7 +3021,7 @@ def update_lxc_conf(name, lxc_conf, lxc_conf_unset, path=None):
                             ({line[0]: line[1:]}, {key: item}))
                         break
             if not matched:
-                if not (key, item) in lines:
+                if (key, item) not in lines:
                     lines.append((key, item))
                 changes['added'].append({key: item})
         dest_lxc_conf = []
@@ -3117,7 +3117,7 @@ def set_dns(name, dnsservers=None, searchdomains=None, path=None):
     #  - We also teach resolvconf to use the aforementioned dns.
     #  - We finally also set /etc/resolv.conf in all cases
     rstr = __salt__['test.rand_str']()
-    # no tmp here, apparmor wont let us execute !
+    # no tmp here, apparmor won't let us execute !
     script = '/sbin/{0}_dns.sh'.format(rstr)
     DNS_SCRIPT = "\n".join([
         # 'set -x',
@@ -3178,7 +3178,7 @@ def running_systemd(name, cache=True, path=None):
     ret = __context__.get(k, None)
     if ret is None or not cache:
         rstr = __salt__['test.rand_str']()
-        # no tmp here, apparmor wont let us execute !
+        # no tmp here, apparmor won't let us execute !
         script = '/sbin/{0}_testsystemd.sh'.format(rstr)
         # ubuntu already had since trusty some bits of systemd but was
         # still using upstart ...
@@ -3188,7 +3188,7 @@ def running_systemd(name, cache=True, path=None):
             '''\
             #!/usr/bin/env bash
             set -x
-            if ! which systemctl 1>/dev/null 2>/dev/null;then exit 2;fi
+            if ! command -v systemctl 1>/dev/null 2>/dev/null;then exit 2;fi
             for i in \\
                 /run/systemd/journal/dev-log\\
                 /run/systemd/journal/flushed\\
@@ -4285,7 +4285,7 @@ def read_conf(conf_file, out_format='simple'):
 
     out_format:
         set to 'simple' if you need the old and unsupported behavior.
-        This wont support the multiple lxc values (eg: multiple network nics)
+        This won't support the multiple lxc values (eg: multiple network nics)
 
     CLI Examples:
 

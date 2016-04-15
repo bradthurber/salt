@@ -256,9 +256,16 @@ def save_load(jid, clear_load):
     _close_conn(conn)
 
 
+def save_minions(jid, minions):  # pylint: disable=unused-argument
+    '''
+    Included for API consistency
+    '''
+    pass
+
+
 def _escape_jid(jid):
     '''
-    Do proper formating of the jid
+    Do proper formatting of the jid
     '''
     jid = str(jid)
     jid = re.sub(r"'*", "", jid)

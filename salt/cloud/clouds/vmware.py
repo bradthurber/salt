@@ -857,7 +857,7 @@ def _format_instance_info_select(vm, selection):
 
     if 'files' in selection:
         file_full_info = {}
-        if "layoutEx.file" in file:
+        if "layoutEx.file" in file:  # pylint: disable=E1135
             for file in vm["layoutEx.file"]:
                 file_full_info[file.key] = {
                     'key': file.key,
@@ -2006,7 +2006,8 @@ def create(vm_):
         # Check for required profile parameters before sending any API calls.
         if config.is_profile_configured(__opts__,
                                         __active_provider_name__ or 'vmware',
-                                        vm_['profile']) is False:
+                                        vm_['profile'],
+                                        vm_=vm_) is False:
             return False
     except AttributeError:
         pass

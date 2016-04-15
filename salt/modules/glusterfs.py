@@ -9,11 +9,6 @@ import logging
 import sys
 import xml.etree.ElementTree as ET
 
-# Import 3rd-party libs
-# pylint: disable=import-error,redefined-builtin
-from salt.ext.six.moves import range
-# pylint: enable=import-error,redefined-builtin
-
 # Import salt libs
 import salt.utils
 import salt.utils.cloud as suc
@@ -36,8 +31,7 @@ def _get_minor_version():
     version = 6
     cmd = 'gluster --version'
     result = __salt__['cmd.run'](cmd).splitlines()
-    for line_number in range(len(result)):
-        line = result[line_number]
+    for line in result:
         if line.startswith('glusterfs'):
             version = int(line.split()[1].split('.')[1])
     return version
@@ -54,23 +48,46 @@ def _gluster(cmd):
         'gluster --mode=script', stdin="{0}\n".format(cmd))
 
 
+def _gluster_output_cleanup(result):
+    '''
+    Gluster versions prior to 6 have a bug that requires tricking
+    isatty. This adds "gluster> " to the output. Strip it off and
+    produce clean xml for ElementTree.
+    '''
+    ret = ''
+    for line in result.splitlines():
+        if line.startswith('gluster>'):
+            ret += line[9:].strip()
+        else:
+            ret += line.strip()
+
+    return ret
+
+
 def _gluster_xml(cmd):
     '''
     Perform a gluster --xml command and check for and raise errors.
     '''
-    root = ET.fromstring(
-        __salt__['cmd.run'](
+    if _get_minor_version() < 6:
+        result = __salt__['cmd.run'](
+            'script -q -c "gluster --xml --mode=script"', stdin="{0}\n\004".format(cmd)
+        )
+    else:
+        result = __salt__['cmd.run'](
             'gluster --xml --mode=script', stdin="{0}\n".format(cmd)
-        ).replace("\n", ""))
+        )
+    root = ET.fromstring(_gluster_output_cleanup(result))
+
     if int(root.find('opRet').text) != 0:
         raise CommandExecutionError(root.find('opErrstr').text)
     return root
 
 
 def _etree_to_dict(t):
-    if len(t.getchildren()) > 0:
+    list_t = list(t)
+    if len(list_t) > 0:
         d = {}
-        for child in t.getchildren():
+        for child in list_t:
             d[child.tag] = _etree_to_dict(child)
     else:
         d = t.text
@@ -117,11 +134,16 @@ def list_peers():
 
     '''
     root = _gluster_xml('peer status')
-    result = [x.find('hostname').text for x in _iter(root, 'peer')]
-    if len(result) == 0:
-        return None
-    else:
-        return result
+    result = {}
+    for et_peer in _iter(root, 'peer'):
+        hostname = et_peer.find('hostname').text
+        aliases = []
+        hostnames = et_peer.find('hostnames')
+        if hostnames is not None:
+            aliases = [x.text for x in _iter(
+                hostnames, 'hostname') if not x.text == hostname]
+        result.update({hostname: aliases})
+    return result or None
 
 
 def peer(name):
@@ -159,7 +181,12 @@ def peer(name):
             'Invalid characters in peer name "{0}"'.format(name))
 
     cmd = 'peer probe {0}'.format(name)
-    return _gluster_xml(cmd).find('opRet').text == '0'
+
+    op_result = {
+        "exitval": _gluster_xml(cmd).find('opErrno').text,
+        "output": _gluster_xml(cmd).find('output').text
+    }
+    return op_result
 
 
 def create(name, bricks, stripe=False, replica=False, device_vg=False,
@@ -244,7 +271,7 @@ def create(name, bricks, stripe=False, replica=False, device_vg=False,
     _gluster_xml(cmd)
 
     if start:
-        _gluster_xml('gluster volume start {0}'.format(name))
+        _gluster_xml('volume start {0}'.format(name))
         return 'Volume {0} created and started'.format(name)
     else:
         return 'Volume {0} created. Start volume to use'.format(name)
@@ -344,7 +371,7 @@ def info(name):
     for i, brick in enumerate(_iter(volume, 'brick'), start=1):
         brickkey = 'brick{0}'.format(i)
         bricks[brickkey] = {'path': brick.text}
-        for child in brick.getchildren():
+        for child in list(brick):
             if not child.tag == 'name':
                 bricks[brickkey].update({child.tag: child.text})
         for k, v in brick.items():

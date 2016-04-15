@@ -147,7 +147,7 @@ def get_elb_config(name, region=None, key=None, keyid=None, profile=None):
         return ret
     except boto.exception.BotoServerError as error:
         log.debug(error)
-        return []
+        return {}
 
 
 def create(name, availability_zones, listeners=None, subnets=None,
@@ -195,7 +195,7 @@ def create(name, availability_zones, listeners=None, subnets=None,
             return False
     except boto.exception.BotoServerError as error:
         log.debug(error)
-        msg = 'Failed to create ELB {0}: {1}'.format(name, error)
+        msg = 'Failed to create ELB {0}: {1}: {2}'.format(name, error.error_code, error.message)
         log.error(msg)
         return False
 

@@ -410,6 +410,15 @@ class Master(SMaster):
         if not self.opts['fileserver_backend']:
             errors.append('No fileserver backends are configured')
 
+        # Check to see if we need to create a pillar cache dir
+        if self.opts['pillar_cache'] and not os.path.isdir(os.path.join(self.opts['cachedir'], 'pillar_cache')):
+            try:
+                prev_umask = os.umask(0o077)
+                os.mkdir(os.path.join(self.opts['cachedir'], 'pillar_cache'))
+                os.umask(prev_umask)
+            except OSError:
+                pass
+
         non_legacy_git_pillars = [
             x for x in self.opts.get('ext_pillar', [])
             if 'git' in x
@@ -1126,7 +1135,8 @@ class AESFuncs(object):
         load['grains']['id'] = load['id']
 
         pillar_dirs = {}
-        pillar = salt.pillar.Pillar(
+#        pillar = salt.pillar.Pillar(
+        pillar = salt.pillar.get_pillar(
             self.opts,
             load['grains'],
             load['id'],
@@ -1172,10 +1182,32 @@ class AESFuncs(object):
         '''
         Act on specific events from minions
         '''
+        id_ = load['id']
         if load.get('tag', '') == '_salt_error':
-            log.error('Received minion error from [{minion}]: '
-                      '{data}'.format(minion=load['id'],
-                                      data=load['data']['message']))
+            log.error(
+                'Received minion error from [{minion}]: {data}'
+                .format(minion=id_, data=load['data']['message'])
+            )
+
+        for event in load.get('events', []):
+            event_data = event.get('data', {})
+            if 'minions' in event_data:
+                jid = event_data.get('jid')
+                if not jid:
+                    continue
+                minions = event_data['minions']
+                try:
+                    salt.utils.job.store_minions(
+                        self.opts,
+                        jid,
+                        minions,
+                        mminion=self.mminion,
+                        syndic_id=id_)
+                except (KeyError, salt.exceptions.SaltCacheError) as exc:
+                    log.error(
+                        'Could not add minion(s) {0} for job {1}: {2}'
+                        .format(minions, jid, exc)
+                    )
 
     def _return(self, load):
         '''

@@ -1379,7 +1379,9 @@ class Minion(MinionBase):
             # in the setup process, but we can't load grains for proxies until
             # we talk to the device we are proxying for.  So force a grains
             # sync here.
-            self.functions['saltutil.sync_grains'](saltenv='base')
+            # Hmm...We can't seem to sync grains here, makes the event bus go nuts
+            # leaving this commented to remind future me that this is not a good idea here.
+            # self.functions['saltutil.sync_grains'](saltenv='base')
         else:
             self.functions, self.returners, _ = self._load_modules(force_refresh, notify=notify)
 
@@ -1593,18 +1595,25 @@ class Minion(MinionBase):
                 if self.opts['master_type'] == 'failover':
                     log.info('Trying to tune in to next master from master-list')
 
+                    if hasattr(self, 'pub_channel'):
+                        self.pub_channel.on_recv(None)
+                        if hasattr(self.pub_channel, 'close'):
+                            self.pub_channel.close()
+                        del self.pub_channel
+
                     # if eval_master finds a new master for us, self.connected
                     # will be True again on successful master authentication
-                    self.opts['master'] = self.eval_master(opts=self.opts,
-                                                           failed=True)
+                    master, self.pub_channel = yield self.eval_master(
+                                                        opts=self.opts,
+                                                        failed=True)
                     if self.connected:
+                        self.opts['master'] = master
+
                         # re-init the subsystems to work with the new master
                         log.info('Re-initialising subsystems for new '
                                  'master {0}'.format(self.opts['master']))
-                        del self.pub_channel
-                        self._connect_master_future = self.connect_master()
-                        self.block_until_connected()  # TODO: remove
                         self.functions, self.returners, self.function_errors = self._load_modules()
+                        self.pub_channel.on_recv(self._handle_payload)
                         self._fire_master_minion_start()
                         log.info('Minion is ready to receive requests!')
 
@@ -1813,6 +1822,8 @@ class Minion(MinionBase):
         self._running = False
         if hasattr(self, 'pub_channel'):
             self.pub_channel.on_recv(None)
+            if hasattr(self.pub_channel, 'close'):
+                self.pub_channel.close()
             del self.pub_channel
         if hasattr(self, 'periodic_callbacks'):
             for cb in six.itervalues(self.periodic_callbacks):
@@ -2414,26 +2425,28 @@ class Matcher(object):
         '''
         Matches based on IP address or CIDR notation
         '''
-
         try:
-            tgt = ipaddress.ip_network(tgt)
-            # Target is a network
-            proto = 'ipv{0}'.format(tgt.version)
-            if proto not in self.opts['grains']:
-                return False
-            else:
-                return salt.utils.network.in_subnet(tgt, self.opts['grains'][proto])
+            # Target is an address?
+            tgt = ipaddress.ip_address(tgt)
         except:  # pylint: disable=bare-except
             try:
-               # Target should be an address
-                proto = 'ipv{0}'.format(ipaddress.ip_address(tgt).version)
-                if proto not in self.opts['grains']:
-                    return False
-                else:
-                    return tgt in self.opts['grains'][proto]
+                # Target is a network?
+                tgt = ipaddress.ip_network(tgt)
             except:  # pylint: disable=bare-except
-                log.error('Invalid IP/CIDR target {0}"'.format(tgt))
-                return False
+                log.error('Invalid IP/CIDR target: {0}'.format(tgt))
+                return []
+        proto = 'ipv{0}'.format(tgt.version)
+
+        grains = self.opts['grains']
+
+        if proto not in grains:
+            match = False
+        elif isinstance(tgt, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            match = str(tgt) in grains[proto]
+        else:
+            match = salt.utils.network.in_subnet(tgt, grains[proto])
+
+        return match
 
     def range_match(self, tgt):
         '''
@@ -2591,6 +2604,10 @@ class ProxyMinion(Minion):
         # Then load the proxy module
         self.proxy = salt.loader.proxy(self.opts)
 
+        # Check config 'add_proxymodule_to_opts'  Remove this in Boron.
+        if self.opts['add_proxymodule_to_opts']:
+            self.opts['proxymodule'] = self.proxy
+
         # And re-load the modules so the __proxy__ variable gets injected
         self.functions, self.returners, self.function_errors = self._load_modules(proxy=self.proxy)
         self.functions.pack['__proxy__'] = self.proxy
@@ -2613,10 +2630,6 @@ class ProxyMinion(Minion):
         # we talk to the device we are proxying for.  So reload the grains
         # functions here, and then force a grains sync in modules_refresh
         self.opts['grains'] = salt.loader.grains(self.opts, force_refresh=True)
-
-        # Check config 'add_proxymodule_to_opts'  Remove this in Boron.
-        if self.opts['add_proxymodule_to_opts']:
-            self.opts['proxymodule'] = self.proxy
 
         self.serial = salt.payload.Serial(self.opts)
         self.mod_opts = self._prep_mod_opts()

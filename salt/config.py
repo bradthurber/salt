@@ -38,6 +38,7 @@ import salt.utils.validate.path
 import salt.utils.xdg
 import salt.exceptions
 import salt.utils.sdb
+from salt.utils.locales import sdecode
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ FLO_DIR = os.path.join(
 
 VALID_OPTS = {
     # The address of the salt master. May be specified as IP address or hostname
-    'master': str,
+    'master': (str, list),
 
     # The TCP/UDP port of the master to connect to in order to listen to publications
     'master_port': int,
@@ -497,6 +498,15 @@ VALID_OPTS = {
     # Whether or not a copy of the master opts dict should be rendered into minion pillars
     'pillar_opts': bool,
 
+    # Cache the master pillar to disk to avoid having to pass through the rendering system
+    'pillar_cache': bool,
+
+    # Pillar cache TTL, in seconds. Has no effect unless `pillar_cache` is True
+    'pillar_cache_ttl': int,
+
+    # Pillar cache backend. Defaults to `disk` which stores caches in the master cache
+    'pillar_cache_backend': str,
+
     'pillar_safe_render_error': bool,
 
     # When creating a pillar, there are several strategies to choose from when
@@ -530,8 +540,8 @@ VALID_OPTS = {
     'token_expire': int,
     'file_recv': bool,
     'file_recv_max_size': int,
-    'file_ignore_regex': bool,
-    'file_ignore_glob': bool,
+    'file_ignore_regex': list,
+    'file_ignore_glob': list,
     'fileserver_backend': list,
     'fileserver_followsymlinks': bool,
     'fileserver_ignoresymlinks': bool,
@@ -548,7 +558,7 @@ VALID_OPTS = {
     'autosign_timeout': int,
 
     # A mapping of external systems that can be used to generate topfile data.
-    'master_tops': bool,  # FIXME Should be dict?
+    'master_tops': dict,
 
     # A flag that should be set on a top-level master when it is ordering around subordinate masters
     # via the use of a salt syndic
@@ -724,7 +734,7 @@ VALID_OPTS = {
     # primarily as a mitigation technique against minion disconnects.
     'ping_interval': int,
 
-    # Instructs the salt CLI to print a summary of a minion reponses before returning
+    # Instructs the salt CLI to print a summary of a minion responses before returning
     'cli_summary': bool,
 
     # The maximum number of minion connections allowed by the master. Can have performance
@@ -798,6 +808,12 @@ DEFAULT_MINION_OPTS = {
     'autoload_dynamic_modules': True,
     'environment': None,
     'pillarenv': None,
+    'pillar_opts': False,
+    # `pillar_cache` and `pillar_ttl`
+    # are not used on the minion but are unavoidably in the code path
+    'pillar_cache': False,
+    'pillar_cache_ttl': 3600,
+    'pillar_cache_backend': 'disk',
     'extension_modules': '',
     'state_top': 'top.sls',
     'state_top_saltenv': None,
@@ -816,8 +832,8 @@ DEFAULT_MINION_OPTS = {
     'fileserver_limit_traversal': False,
     'file_recv': False,
     'file_recv_max_size': 100,
-    'file_ignore_regex': None,
-    'file_ignore_glob': None,
+    'file_ignore_regex': [],
+    'file_ignore_glob': [],
     'fileserver_backend': ['roots'],
     'fileserver_followsymlinks': True,
     'fileserver_ignoresymlinks': False,
@@ -1058,6 +1074,9 @@ DEFAULT_MASTER_OPTS = {
     'pillar_safe_render_error': True,
     'pillar_source_merging_strategy': 'smart',
     'pillar_merge_lists': False,
+    'pillar_cache': False,
+    'pillar_cache_ttl': 3600,
+    'pillar_cache_backend': 'disk',
     'ping_on_rotate': False,
     'peer': {},
     'preserve_minion_cache': False,
@@ -1073,7 +1092,7 @@ DEFAULT_MASTER_OPTS = {
     'file_recv': False,
     'file_recv_max_size': 100,
     'file_buffer_size': 1048576,
-    'file_ignore_regex': None,
+    'file_ignore_regex': [],
     'file_ignore_glob': None,
     'fileserver_backend': ['roots'],
     'fileserver_followsymlinks': True,
@@ -1218,10 +1237,10 @@ DEFAULT_PROXY_MINION_OPTS = {
     'log_file': os.path.join(salt.syspaths.LOGS_DIR, 'proxy'),
     'add_proxymodule_to_opts': True,
 
-    # Default multiprocessing to False since anything that needs
-    # salt.vt will have trouble with our forking model.
+    # Multiprocessing needs to be False for any proxy that needs
+    # salt.vt (e.g. ssh-based proxies)
     # Proxies with non-persistent (mostly REST API) connections
-    # can change this back to True
+    # can leave this at True
     'multiprocessing': True
 }
 
@@ -1329,32 +1348,61 @@ def _validate_opts(opts):
     Check that all of the types of values passed into the config are
     of the right types
     '''
+    def format_multi_opt(valid_type):
+        try:
+            num_types = len(valid_type)
+        except TypeError:
+            # Bare type name won't have a length, return the name of the type
+            # passed.
+            return valid_type.__name__
+        else:
+            if num_types == 1:
+                return valid_type.__name__
+            elif num_types > 1:
+                ret = ', '.join(x.__name__ for x in valid_type[:-1])
+                ret += ' or ' + valid_type[-1].__name__
+
     errors = []
-    err = ('Key {0} with value {1} has an invalid type of {2}, a {3} is '
+
+    err = ('Key \'{0}\' with value {1} has an invalid type of {2}, a {3} is '
            'required for this value')
     for key, val in six.iteritems(opts):
         if key in VALID_OPTS:
-            if isinstance(VALID_OPTS[key](), list):
-                if isinstance(val, VALID_OPTS[key]):
-                    continue
-                else:
-                    errors.append(err.format(key, val, type(val), 'list'))
-            if isinstance(VALID_OPTS[key](), dict):
-                if isinstance(val, VALID_OPTS[key]):
-                    continue
-                else:
-                    errors.append(err.format(key, val, type(val), 'dict'))
-            else:
+            if isinstance(val, VALID_OPTS[key]):
+                continue
+
+            if hasattr(VALID_OPTS[key], '__call__'):
                 try:
                     VALID_OPTS[key](val)
-                except ValueError:
+                    if isinstance(val, (list, dict)):
+                        # We'll only get here if VALID_OPTS[key] is str or
+                        # bool, and the passed value is a list/dict. Attempting
+                        # to run int() or float() on a list/dict will raise an
+                        # exception, but running str() or bool() on it will
+                        # pass despite not being the correct type.
+                        errors.append(
+                            err.format(
+                                key,
+                                val,
+                                type(val).__name__,
+                                VALID_OPTS[key].__name__
+                            )
+                        )
+                except (TypeError, ValueError):
                     errors.append(
-                        err.format(key, val, type(val), VALID_OPTS[key])
+                        err.format(key,
+                                   val,
+                                   type(val).__name__,
+                                   VALID_OPTS[key].__name__)
                     )
-                except TypeError:
-                    errors.append(
-                        err.format(key, val, type(val), VALID_OPTS[key])
-                    )
+                continue
+
+            errors.append(
+                err.format(key,
+                           val,
+                           type(val).__name__,
+                           format_multi_opt(VALID_OPTS[key].__name__))
+            )
 
     # RAET on Windows uses 'win32file.CreateMailslot()' for IPC. Due to this,
     # sock_dirs must start with '\\.\mailslot\' and not contain any colons.
@@ -1367,7 +1415,7 @@ def _validate_opts(opts):
                 '\\\\.\\mailslot\\' + opts['sock_dir'].replace(':', ''))
 
     for error in errors:
-        log.warning(error)
+        log.debug(error)
     if errors:
         return False
     return True
@@ -1409,7 +1457,10 @@ def _read_conf_file(path):
             conf_opts = {}
         # allow using numeric ids: convert int to string
         if 'id' in conf_opts:
-            conf_opts['id'] = str(conf_opts['id'])
+            if not isinstance(conf_opts['id'], six.string_types):
+                conf_opts['id'] = str(conf_opts['id'])
+            else:
+                conf_opts['id'] = sdecode(conf_opts['id'])
         for key, value in six.iteritems(conf_opts.copy()):
             if isinstance(value, text_type) and six.PY2:
                 # We do not want unicode settings
@@ -1811,6 +1862,7 @@ def cloud_config(path, env_var='SALT_CLOUD_CONFIG', defaults=None,
         os.path.abspath(
             os.path.join(
                 os.path.dirname(__file__),
+                '..',
                 'cloud',
                 'deploy'
             )
@@ -2581,7 +2633,7 @@ def is_provider_configured(opts, provider, required_keys=()):
     return False
 
 
-def is_profile_configured(opts, provider, profile_name):
+def is_profile_configured(opts, provider, profile_name, vm_=None):
     '''
     Check if the requested profile contains the minimum required parameters for
     a profile.
@@ -2617,7 +2669,7 @@ def is_profile_configured(opts, provider, profile_name):
     elif driver == 'vmware' or linode_cloning:
         required_keys.append('clonefrom')
     elif driver == 'nova':
-        nova_image_keys = ['image', 'block_device_mapping', 'block_device']
+        nova_image_keys = ['image', 'block_device_mapping', 'block_device', 'boot_volume']
         if not any([key in provider_key for key in nova_image_keys]) and not any([key in profile_key for key in nova_image_keys]):
             required_keys.extend(nova_image_keys)
 
@@ -2626,9 +2678,16 @@ def is_profile_configured(opts, provider, profile_name):
 
     # Check if image and/or size are supplied in the provider config. If either
     # one is present, remove it from the required_keys list.
-    for item in required_keys:
+    for item in list(required_keys):
         if item in provider_key:
             required_keys.remove(item)
+
+    # If a vm_ dict was passed in, use that information to get any other configs
+    # that we might have missed thus far, such as a option provided in a map file.
+    if vm_:
+        for item in list(required_keys):
+            if item in vm_:
+                required_keys.remove(item)
 
     # Check for remaining required parameters in the profile config.
     for item in required_keys:
