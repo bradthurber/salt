@@ -2,9 +2,6 @@
 '''
 Vistara Runner
 
-.. versionadded:: 2015.8.9
-
-
 Runner to interact with the Vistara (http://www.vistarait.com/) REST API
 
 :codeauthor: Brad Thurber <brad.thurber@gmail.com>
